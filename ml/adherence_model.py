@@ -1,22 +1,32 @@
 """
 Adherence risk scoring.
 
-MVP heuristic model: a weighted formula over the engineered features in
-patient_features. This is intentionally simple and explainable so it can
-be validated by a clinician before any real ML is introduced. Swap this
-out for a trained classifier once labeled outcome data (e.g. exacerbation
-events, hospital readmission) is available.
+Two scoring paths, chosen automatically:
+
+1. Trained classifier (ml/model/adherence_risk_model.joblib) -- a Logistic
+   Regression or Random Forest trained in ml/train/train_classifier.py on a
+   larger simulated cohort (ml/train/simulate_training_cohort.py). Used
+   whenever the model artifact is present.
+2. Heuristic fallback -- the original transparent weighted formula over the
+   same four features, used only if no trained model exists yet. Kept
+   deliberately, both as a sanity check against the trained model and as a
+   simple, explainable baseline a clinician can validate by eye.
+
+To train the classifier (optional, but the "real" scoring path):
+    python ml/train/simulate_training_cohort.py
+    python ml/train/train_classifier.py
+
+Then just run this script as usual -- it will pick up the trained model:
+    python ml/adherence_model.py
 
 Connects to the same PostgreSQL database as etl/etl.py (DATABASE_URL or
 discrete PG* env vars, see etl/etl.py for details).
-
-Usage:
-    python ml/adherence_model.py
 """
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import sqlalchemy as sa
 from dotenv import load_dotenv
@@ -24,13 +34,22 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
-WEIGHTS = {
+MODEL_PATH = ROOT / "ml" / "model" / "adherence_risk_model.joblib"
+
+FEATURES = [
+    "adherence_rate",
+    "missed_dose_max_streak",
+    "dose_interval_variance",
+    "technique_error_rate",
+]
+
+# --- heuristic fallback config ---
+HEURISTIC_WEIGHTS = {
     "missed_adherence": 0.50,   # 1 - adherence_rate
     "missed_streak": 0.25,      # normalized missed_dose_max_streak
     "interval_variance": 0.10,  # normalized dose_interval_variance
     "technique_error_rate": 0.15,
 }
-
 STREAK_NORM_DAYS = 14       # 14+ consecutive missed days -> max contribution
 VARIANCE_NORM_MIN2 = 5000   # variance ceiling (minutes^2) for normalization
 
@@ -55,22 +74,25 @@ def risk_tier(score: float) -> str:
     return "Low"
 
 
-def score_patients(features: pd.DataFrame) -> pd.DataFrame:
+def heuristic_score(f: pd.Series) -> float:
+    missed_adherence = 1 - f["adherence_rate"]
+    missed_streak_norm = min(f["missed_dose_max_streak"] / STREAK_NORM_DAYS, 1.0)
+    variance_norm = min(f["dose_interval_variance"] / VARIANCE_NORM_MIN2, 1.0)
+    error_rate = f["technique_error_rate"]
+
+    raw_score = (
+        HEURISTIC_WEIGHTS["missed_adherence"] * missed_adherence
+        + HEURISTIC_WEIGHTS["missed_streak"] * missed_streak_norm
+        + HEURISTIC_WEIGHTS["interval_variance"] * variance_norm
+        + HEURISTIC_WEIGHTS["technique_error_rate"] * error_rate
+    )
+    return round(raw_score * 100, 1)
+
+
+def score_with_heuristic(features: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, f in features.iterrows():
-        missed_adherence = 1 - f["adherence_rate"]
-        missed_streak_norm = min(f["missed_dose_max_streak"] / STREAK_NORM_DAYS, 1.0)
-        variance_norm = min(f["dose_interval_variance"] / VARIANCE_NORM_MIN2, 1.0)
-        error_rate = f["technique_error_rate"]
-
-        raw_score = (
-            WEIGHTS["missed_adherence"] * missed_adherence
-            + WEIGHTS["missed_streak"] * missed_streak_norm
-            + WEIGHTS["interval_variance"] * variance_norm
-            + WEIGHTS["technique_error_rate"] * error_rate
-        )
-        score = round(raw_score * 100, 1)
-
+        score = heuristic_score(f)
         rows.append(
             {
                 "patient_id": f["patient_id"],
@@ -82,10 +104,37 @@ def score_patients(features: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def score_with_model(features: pd.DataFrame, model) -> pd.DataFrame:
+    proba = model.predict_proba(features[FEATURES])[:, 1]
+    rows = []
+    for pid, p in zip(features["patient_id"], proba):
+        score = round(float(p) * 100, 1)
+        rows.append(
+            {
+                "patient_id": pid,
+                "risk_score": score,
+                "risk_tier": risk_tier(score),
+                "scored_at": datetime.now(timezone.utc),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def main():
     engine = get_engine()
     features = pd.read_sql("SELECT * FROM patient_features", engine)
-    scores = score_patients(features)
+
+    if MODEL_PATH.exists():
+        model = joblib.load(MODEL_PATH)
+        print(f"Using trained classifier: {MODEL_PATH.relative_to(ROOT)}")
+        scores = score_with_model(features, model)
+    else:
+        print(
+            "No trained model found at ml/model/ -- using heuristic fallback.\n"
+            "Run `python ml/train/simulate_training_cohort.py` then "
+            "`python ml/train/train_classifier.py` to train one."
+        )
+        scores = score_with_heuristic(features)
 
     with engine.begin() as conn:
         conn.exec_driver_sql("TRUNCATE TABLE adherence_scores")

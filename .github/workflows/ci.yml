@@ -16,6 +16,8 @@ jobs:
       - run: pip install -r etl/requirements.txt -r ml/requirements.txt
       - run: python data-generator/generate_data.py
       - run: python etl/etl.py
+      - run: python ml/train/simulate_training_cohort.py
+      - run: python ml/train/train_classifier.py
       - run: python ml/adherence_model.py
 
   backend:
