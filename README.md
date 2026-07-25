@@ -1,15 +1,13 @@
 # Respiratory Device Adherence Copilot (MVP)
 
-An AI tool that ingests simulated respiratory-device usage data (standing in
-for AeroChamber / Aerobika / AeroEclipse telemetry), scores patient adherence
+An AI tool that ingests simulated respiratory-device usage data (AeroChamber / Aerobika / AeroEclipse telemetry), scores patient adherence
 risk, and lets a clinician ask natural-language questions over the data via
-an LLM chat layer. Built as a portfolio project targeting Trudell Medical's
-AI Engineer role — see `docs/architecture.md` for the full design.
+an LLM chat layer. See `docs/architecture.md` for the full design.
 
 ## Stack
 
 - **Data generation & ETL**: Python, pandas
-- **Risk scoring**: Python (heuristic model, swappable for a trained classifier)
+- **Risk scoring**: Python (heuristic model, swappable (in production) for a trained classifier)
 - **Backend**: Node.js, Express, better-sqlite3, `@anthropic-ai/sdk`
 - **Frontend**: React, Vite
 - **Storage**: SQLite locally (swap for Postgres/RDS in production)
