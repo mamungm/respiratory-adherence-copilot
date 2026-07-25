@@ -8,3 +8,4 @@ data/*.db-wal
 data/*.db-shm
 dist/
 .DS_Store
+/backend/package-lock.json
