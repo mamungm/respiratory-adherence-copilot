@@ -1,0 +1,104 @@
+:root {
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f7f7f8;
+  color: #1a1a1a;
+}
+
+.app-header {
+  padding: 24px 32px 8px;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+  padding: 0 32px 32px;
+}
+
+.dashboard,
+.chat-widget {
+  background: white;
+  border: 1px solid #e2e2e5;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.patient-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.patient-table th,
+.patient-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.tier-badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.tier-high {
+  background: #fde2e2;
+  color: #9c1c1c;
+}
+
+.tier-medium {
+  background: #fdf1d6;
+  color: #8a5b00;
+}
+
+.tier-low {
+  background: #dff5e1;
+  color: #1b6e2c;
+}
+
+.chat-log {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.chat-msg {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-input-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.chat-input-row button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: white;
+  cursor: pointer;
+}
+
+.chat-input-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.error {
+  color: #9c1c1c;
+}
