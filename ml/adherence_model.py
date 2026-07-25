@@ -7,17 +7,22 @@ be validated by a clinician before any real ML is introduced. Swap this
 out for a trained classifier once labeled outcome data (e.g. exacerbation
 events, hospital readmission) is available.
 
+Connects to the same PostgreSQL database as etl/etl.py (DATABASE_URL or
+discrete PG* env vars, see etl/etl.py for details).
+
 Usage:
     python ml/adherence_model.py
 """
-import sqlite3
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import sqlalchemy as sa
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "adherence.db"
+load_dotenv(ROOT / ".env")
 
 WEIGHTS = {
     "missed_adherence": 0.50,   # 1 - adherence_rate
@@ -28,6 +33,18 @@ WEIGHTS = {
 
 STREAK_NORM_DAYS = 14       # 14+ consecutive missed days -> max contribution
 VARIANCE_NORM_MIN2 = 5000   # variance ceiling (minutes^2) for normalization
+
+
+def get_engine() -> sa.Engine:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        host = os.environ.get("PGHOST", "localhost")
+        port = os.environ.get("PGPORT", "5432")
+        name = os.environ.get("PGDATABASE", "adherence")
+        user = os.environ.get("PGUSER", "postgres")
+        password = os.environ.get("PGPASSWORD", "postgres")
+        url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
+    return sa.create_engine(url)
 
 
 def risk_tier(score: float) -> str:
@@ -59,19 +76,21 @@ def score_patients(features: pd.DataFrame) -> pd.DataFrame:
                 "patient_id": f["patient_id"],
                 "risk_score": score,
                 "risk_tier": risk_tier(score),
-                "scored_at": datetime.now(timezone.utc).isoformat(),
+                "scored_at": datetime.now(timezone.utc),
             }
         )
     return pd.DataFrame(rows)
 
 
 def main():
-    conn = sqlite3.connect(DB_PATH)
-    features = pd.read_sql("SELECT * FROM patient_features", conn)
+    engine = get_engine()
+    features = pd.read_sql("SELECT * FROM patient_features", engine)
     scores = score_patients(features)
-    scores.to_sql("adherence_scores", conn, if_exists="replace", index=False)
-    conn.commit()
-    conn.close()
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql("TRUNCATE TABLE adherence_scores")
+    scores.to_sql("adherence_scores", engine, if_exists="append", index=False)
+
     print(scores.sort_values("risk_score", ascending=False).to_string(index=False))
 
 

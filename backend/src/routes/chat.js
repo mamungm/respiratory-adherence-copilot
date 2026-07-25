@@ -37,7 +37,7 @@ router.post("/", async (req, res) => {
 
       let toolResult;
       try {
-        toolResult = runReadOnlyQuery(toolUse.input.sql);
+        toolResult = await runReadOnlyQuery(toolUse.input.sql);
       } catch (err) {
         toolResult = { error: err.message };
       }

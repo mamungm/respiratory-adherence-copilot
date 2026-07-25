@@ -1,12 +1,15 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import pg from "pg";
 import "dotenv/config";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.resolve(__dirname, process.env.DB_PATH || "../../data/adherence.db");
+const { Pool } = pg;
 
-// fileMustExist: run the Python ETL pipeline first (see README) so this
-// file exists before the API starts.
-export const db = new Database(dbPath, { readonly: false, fileMustExist: true });
-db.pragma("journal_mode = WAL");
+// Pool reads DATABASE_URL if set; otherwise falls back to this default,
+// which matches docker-compose.yml for local dev.
+export const pool = new Pool({
+  connectionString:
+    process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/adherence",
+});
+
+pool.on("error", (err) => {
+  console.error("Unexpected Postgres pool error", err);
+});

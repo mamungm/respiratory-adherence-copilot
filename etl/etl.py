@@ -1,33 +1,65 @@
 """
-ETL pipeline: loads simulated device usage logs into SQLite and engineers
-adherence features per patient.
+ETL pipeline: loads simulated device usage logs into PostgreSQL and
+engineers adherence features per patient.
 
 Run after data-generator/generate_data.py has produced:
     data/patients.csv
     data/device_logs.csv
 
+Connects using DATABASE_URL if set, otherwise falls back to discrete
+PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD env vars (defaults match
+docker-compose.yml). Copy .env.example to .env in the repo root to
+configure locally.
+
 Usage:
     python etl/etl.py
 """
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-
+import os
+import sqlalchemy as sa
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
+from pathlib import Path
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 PATIENTS_CSV = ROOT / "data" / "patients.csv"
 EVENTS_CSV = ROOT / "data" / "device_logs.csv"
 SCHEMA_SQL = ROOT / "db" / "schema.sql"
-DB_PATH = ROOT / "data" / "adherence.db"
+
+load_dotenv(ROOT / ".env")
 
 
-def load_raw(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]:
+def get_engine() -> sa.Engine:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        host = os.environ.get("PGHOST", "localhost")
+        port = os.environ.get("PGPORT", "5432")
+        name = os.environ.get("PGDATABASE", "adherence")
+        user = os.environ.get("PGUSER", "postgres")
+        password = os.environ.get("PGPASSWORD", "postgres")
+        url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
+    return sa.create_engine(url)
+
+
+def apply_schema(engine: sa.Engine):
+    with engine.begin() as conn:
+        conn.exec_driver_sql(SCHEMA_SQL.read_text())
+
+
+def reset_tables(engine: sa.Engine):
+    """Idempotent re-run: wipe existing rows before reloading from CSVs.
+    ON DELETE CASCADE on the foreign keys means truncating patients clears
+    everything downstream too."""
+    with engine.begin() as conn:
+        conn.exec_driver_sql("TRUNCATE TABLE patients RESTART IDENTITY CASCADE")
+
+
+def load_raw(engine: sa.Engine) -> tuple[pd.DataFrame, pd.DataFrame]:
     patients = pd.read_csv(PATIENTS_CSV)
     events = pd.read_csv(EVENTS_CSV)
-    patients.to_sql("patients", conn, if_exists="replace", index=False)
-    events.to_sql("dose_events", conn, if_exists="replace", index=False)
+    patients.to_sql("patients", engine, if_exists="append", index=False)
+    events.to_sql("dose_events", engine, if_exists="append", index=False)
     return patients, events
 
 
@@ -77,7 +109,7 @@ def engineer_features(patients: pd.DataFrame, events: pd.DataFrame) -> pd.DataFr
                 "missed_dose_max_streak": int(max_streak),
                 "dose_interval_variance": round(interval_variance, 2),
                 "technique_error_rate": round(technique_error_rate, 4),
-                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "computed_at": datetime.now(timezone.utc),
             }
         )
 
@@ -85,18 +117,16 @@ def engineer_features(patients: pd.DataFrame, events: pd.DataFrame) -> pd.DataFr
 
 
 def main():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA_SQL.read_text())
+    engine = get_engine()
+    apply_schema(engine)
+    reset_tables(engine)
 
-    patients, events = load_raw(conn)
+    patients, events = load_raw(engine)
     features = engineer_features(patients, events)
-    features.to_sql("patient_features", conn, if_exists="replace", index=False)
+    features.to_sql("patient_features", engine, if_exists="append", index=False)
 
-    conn.commit()
-    conn.close()
     print(f"Loaded {len(patients)} patients, {len(events)} dose events.")
-    print(f"Wrote features for {len(features)} patients to {DB_PATH}")
+    print(f"Wrote features for {len(features)} patients to Postgres.")
 
 
 if __name__ == "__main__":
