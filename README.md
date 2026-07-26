@@ -17,12 +17,27 @@ AI Engineer role — see `docs/architecture.md` for the full design.
 
 ## Quickstart
 
-### 1. Start Postgres
+### 1. Start Postgres (and optionally the backend + frontend)
 
 ```bash
 cd respiratory-adherence-copilot
-docker compose up -d          # starts Postgres on localhost:5432
+docker compose up -d postgres          # starts Postgres on localhost:5432
+# or: docker compose up -d --build      # also builds + runs backend (:4000) and frontend (:5173)
 ```
+
+A `migrate` service applies `db/schema.sql` to Postgres automatically on
+every `docker compose up` (it's a one-off container gated on Postgres's
+healthcheck; `backend` waits for it to exit successfully before starting).
+`schema.sql` uses `CREATE TABLE/INDEX IF NOT EXISTS`, so re-running it
+against an already-migrated database is a safe no-op. `backend` builds from
+`backend/Dockerfile` and reads `backend/.env` for `ANTHROPIC_API_KEY` (make
+sure that file exists and has a real key before using `--build`). `frontend`
+builds a static Vite bundle served by nginx, which proxies `/api/*` to the
+`backend` container the same way the Vite dev server proxy does for
+`npm run dev`. If you'd rather run with hot-reload during development, just
+start `postgres` alone as shown above and skip to steps 4-5 (the ETL step
+below also applies the schema, so you don't need `migrate` if you're not
+using the Docker backend/frontend).
 
 ### 2. Generate data and run the pipeline
 
@@ -91,7 +106,7 @@ respiratory-adherence-copilot/
 ├── ml/                # trained classifier + heuristic fallback for risk scoring
 │   └── train/          # synthetic training cohort + train/eval script
 ├── backend/           # Node/Express API + Claude tool-use chat endpoint (pg pool)
-├── frontend/          # React + Vite dashboard and chat UI
+├── frontend/          # React + Vite dashboard and chat UI (nginx + proxy in Docker)
 ├── docs/              # architecture notes
 └── .github/workflows/ci.yml
 ```

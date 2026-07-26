@@ -20,5 +20,46 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-off container that applies db/schema.sql to Postgres on every
+  # `docker compose up` (schema.sql uses CREATE TABLE/INDEX IF NOT EXISTS,
+  # so re-running it against an already-migrated database is a safe no-op).
+  # Exits after applying the schema; backend waits for it to succeed.
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./db/schema.sql:/schema.sql:ro
+    environment:
+      PGPASSWORD: postgres
+    entrypoint:
+      ["psql", "-h", "postgres", "-U", "postgres", "-d", "adherence", "-v", "ON_ERROR_STOP=1", "-f", "/schema.sql"]
+    restart: "no"
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - ./backend/.env
+    environment:
+      # overrides backend/.env - containers reach Postgres by service name, not localhost
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/adherence
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
 volumes:
   pgdata:
