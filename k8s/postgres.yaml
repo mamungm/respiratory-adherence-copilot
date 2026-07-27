@@ -1,0 +1,161 @@
+# Postgres for the Respiratory Adherence Copilot.
+#
+# For a real deployment, prefer a managed database (Amazon RDS for
+# Postgres) over running Postgres in-cluster - point backend's
+# DATABASE_URL secret at RDS instead and skip everything in this file
+# except leave the app pointed at the right host. This manifest is for
+# local clusters (kind/minikube) or quick demos.
+
+# --- schema, applied via the same docker-entrypoint-initdb.d mechanism
+# used in docker-compose.yml: the official postgres image auto-runs any
+# *.sql file found there, in filename order, the first time it initializes
+# an EMPTY data directory. Re-applying against a PVC that already has data
+# does nothing (Postgres skips init scripts once initialized) - that's the
+# same behavior/caveat documented for docker-compose.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-schema
+  namespace: adherence-copilot
+data:
+  01-schema.sql: |
+    -- Schema for the Respiratory Device Adherence Copilot MVP (PostgreSQL).
+
+    CREATE TABLE IF NOT EXISTS patients (
+        patient_id                  TEXT PRIMARY KEY,
+        device_type                 TEXT NOT NULL,
+        prescribed_doses_per_day    INTEGER NOT NULL,
+        monitoring_start            DATE NOT NULL,
+        monitoring_days             INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dose_events (
+        id                  SERIAL PRIMARY KEY,
+        patient_id          TEXT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+        device_type         TEXT NOT NULL,
+        expected_time       TIMESTAMP NOT NULL,
+        event_timestamp     TIMESTAMP NOT NULL,
+        dose_completed      INTEGER NOT NULL,
+        technique_error     INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS patient_features (
+        patient_id              TEXT PRIMARY KEY REFERENCES patients(patient_id) ON DELETE CASCADE,
+        adherence_rate          REAL NOT NULL,
+        missed_dose_max_streak  INTEGER NOT NULL,
+        dose_interval_variance  REAL NOT NULL,
+        technique_error_rate    REAL NOT NULL,
+        computed_at             TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS adherence_scores (
+        patient_id      TEXT PRIMARY KEY REFERENCES patients(patient_id) ON DELETE CASCADE,
+        risk_score      REAL NOT NULL,
+        risk_tier       TEXT NOT NULL,
+        scored_at       TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dose_events_patient_id ON dose_events(patient_id);
+---
+# --- credentials. Placeholder values below are fine for a local demo
+# cluster (kind/minikube). For anything shared/long-lived, don't apply
+# this file with real secrets in it - instead create the secret
+# imperatively and skip this Secret object:
+#
+#   kubectl create secret generic postgres-secret -n adherence-copilot \
+#     --from-literal=POSTGRES_DB=adherence \
+#     --from-literal=POSTGRES_USER=postgres \
+#     --from-literal=POSTGRES_PASSWORD=<a-real-password>
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: adherence-copilot
+type: Opaque
+stringData:
+  POSTGRES_DB: adherence
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: CHANGE_ME_STRONG_PASSWORD
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: adherence-copilot
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: adherence-copilot
+spec:
+  replicas: 1
+  # RWO volume can't be mounted by two pods at once - roll old pod out
+  # before bringing the new one up rather than running both briefly.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata # avoid "lost+found" tripping up initialization on some volume types
+            - name: postgres-schema
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: postgres-schema
+          configMap:
+            name: postgres-schema
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: adherence-copilot
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

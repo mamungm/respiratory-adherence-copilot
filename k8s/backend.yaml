@@ -1,0 +1,80 @@
+# Backend API (Node/Express + Claude tool-use chat endpoint).
+#
+# Placeholder values below are fine for a local demo cluster. For anything
+# shared/long-lived, don't apply this file with real secrets in it -
+# create the secret imperatively instead and skip the Secret object:
+#
+#   kubectl create secret generic backend-secret -n adherence-copilot \
+#     --from-literal=DATABASE_URL=postgresql://postgres:<password>@postgres:5432/adherence \
+#     --from-literal=ANTHROPIC_API_KEY=<your-real-key>
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: adherence-copilot
+type: Opaque
+stringData:
+  # "postgres" here is the Service name below, resolved via cluster DNS -
+  # keep it in sync with the password set in postgres.yaml's Secret.
+  DATABASE_URL: postgresql://postgres:CHANGE_ME_STRONG_PASSWORD@postgres:5432/adherence
+  ANTHROPIC_API_KEY: CHANGE_ME_ANTHROPIC_API_KEY
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: adherence-copilot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          # Build & push from ./backend (see README "Kubernetes Deployment"),
+          # then point this at your registry.
+          image: your-registry/adherence-copilot-backend:latest
+          ports:
+            - containerPort: 4000
+          env:
+            - name: PORT
+              value: "4000"
+          envFrom:
+            - secretRef:
+                name: backend-secret
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: adherence-copilot
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 4000
+      targetPort: 4000

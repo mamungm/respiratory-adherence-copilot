@@ -1,0 +1,25 @@
+# Optional - only needed if you want a real hostname instead of
+# port-forwarding. Requires an ingress controller installed in the
+# cluster (e.g. ingress-nginx, or the AWS Load Balancer Controller on
+# EKS). If you don't have one, skip this file and use
+# `kubectl port-forward` instead (see README).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: adherence-copilot
+  namespace: adherence-copilot
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: adherence-copilot.local # replace with a real hostname / add to /etc/hosts locally
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

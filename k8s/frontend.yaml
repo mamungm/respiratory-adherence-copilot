@@ -1,0 +1,57 @@
+# Frontend (React + Vite, served by nginx, which proxies /api/* to the
+# "backend" Service - see frontend/nginx.conf. That hostname only
+# resolves correctly if the backend Service is named "backend" in this
+# same namespace, which it is (see backend.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: adherence-copilot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          # Build & push from ./frontend (see README "Kubernetes Deployment"),
+          # then point this at your registry.
+          image: your-registry/adherence-copilot-frontend:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: adherence-copilot
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
