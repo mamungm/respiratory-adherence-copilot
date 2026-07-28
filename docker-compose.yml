@@ -4,7 +4,10 @@ version: "3.9"
 # Postgres instead (swap DATABASE_URL / PG* env vars, no code changes).
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector-enabled Postgres (needed for the RAG document_chunks table) -
+    # same official postgres image/entrypoint under the hood, just with the
+    # vector extension preinstalled. Debian-based, not alpine.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: adherence

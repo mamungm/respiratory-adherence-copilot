@@ -11,8 +11,9 @@ AI Engineer role — see `docs/architecture.md` for the full design.
 - **Data generation & ETL**: Python, pandas, SQLAlchemy, psycopg2
 - **Risk scoring**: Python, scikit-learn — trained classifier (Logistic Regression / Random Forest, whichever wins on ROC-AUC), with an explainable heuristic as an automatic fallback
 - **Backend**: Node.js, Express, `pg` (node-postgres), `@anthropic-ai/sdk`
+- **RAG**: `pgvector` + `@xenova/transformers` (local `all-MiniLM-L6-v2` embeddings, no external embeddings API) — device docs + clinical guidance search, used as a second Claude tool alongside SQL
 - **Frontend**: React, Vite
-- **Storage**: PostgreSQL (Docker locally, Amazon RDS in production)
+- **Storage**: PostgreSQL + pgvector (Docker locally, Amazon RDS in production — RDS supports the pgvector extension too)
 - **CI/CD**: GitHub Actions (runs a real Postgres service container)
 - **Deployment**: Docker Compose (local) or Kubernetes (`k8s/`, see below)
 
@@ -26,12 +27,14 @@ docker compose up -d postgres          # starts Postgres on localhost:5432
 # or: docker compose up -d --build      # also builds + runs backend (:4000) and frontend (:5173)
 ```
 
-`postgres` mounts `db/schema.sql` into `/docker-entrypoint-initdb.d/`, which
-the official Postgres image auto-runs the first time it initializes an
-empty data directory — no separate migration step needed. That only fires
-once per volume: if you already have a `pgdata` volume from an earlier run
-that never got the schema applied, reset it with `docker compose down -v`
-before bringing it back up. `backend` builds from `backend/Dockerfile` and
+`postgres` now runs `pgvector/pgvector:pg16` (plain Postgres + the `vector`
+extension preinstalled, needed for RAG below) and mounts `db/schema.sql`
+into `/docker-entrypoint-initdb.d/`, which the image auto-runs the first
+time it initializes an empty data directory — no separate migration step
+needed. That only fires once per volume: if you have a `pgdata` volume from
+before this change (or from before the schema had `document_chunks` in it
+at all), reset it with `docker compose down -v` before bringing it back up.
+`backend` builds from `backend/Dockerfile` and
 reads `backend/.env` for `ANTHROPIC_API_KEY` (make sure that file exists
 and has a real key before using `--build`). `frontend` builds a static Vite
 bundle served by nginx, which proxies `/api/*` to the `backend` container
@@ -94,6 +97,40 @@ npm run dev                 # http://localhost:5173
 
 Open the frontend URL — you'll see the adherence dashboard and a chat widget
 that queries the database through Claude.
+
+### 6. Ingest device docs for RAG (optional, but this is what makes the chat answer "how do I..." questions)
+
+```bash
+cd backend
+npm run ingest:docs   # chunks + embeds rag/docs/*.md, loads them into document_chunks
+```
+
+This reads the markdown files in `rag/docs/` (synthetic AeroChamber /
+Aerobika / AeroEclipse instructions-for-use and general inhaler-technique
+guidance — see the disclaimer at the top of each file), embeds each chunk
+locally with `@xenova/transformers` (`all-MiniLM-L6-v2`, 384-dim, no
+external embeddings API/key needed), and loads them into the
+`document_chunks` table via `pgvector`. The chat endpoint's
+`search_device_docs` tool queries the same table by cosine similarity, so
+the Copilot can now answer questions like "why does the Aerobika need
+weekly cleaning" or "what does poor technique look like with the
+AeroChamber" with cited passages — not just structured numbers from
+`query_adherence_db`. It'll pick up new/edited docs any time you re-run
+this command (it truncates and reloads `document_chunks` each time).
+
+**Why local embeddings instead of an API:** ingestion (this script) and
+query-time search (`backend/src/tools/docSearchTool.js`) both call the
+same `embed()` function in `backend/src/rag/embeddings.js`, so the vector
+space is identical by construction — no risk of the two ends drifting out
+of sync the way they could if ingestion used one embedding model/library
+and query time used another. The tradeoff is retrieval quality: a hosted
+embeddings model (e.g. Voyage AI, Anthropic's recommended embeddings
+partner) would likely retrieve better than a small local model — worth
+swapping in for a real deployment, but overkill for an MVP with four
+short documents.
+
+If you skip this step, `search_device_docs` still works, it'll just return
+nothing useful since `document_chunks` will be empty.
 
 ## Kubernetes Deployment
 
@@ -180,6 +217,7 @@ port-forward:
 kubectl port-forward -n adherence-copilot svc/postgres 5432:5432 &
 python etl/etl.py
 python ml/adherence_model.py   # uses ml/model/ if you've trained it, heuristic otherwise
+cd backend && npm run ingest:docs   # loads rag/docs/*.md into document_chunks
 ```
 
 ### Notes
@@ -210,11 +248,14 @@ respiratory-adherence-copilot/
 ├── docker-compose.yml # local Postgres (+ optional backend/frontend) for development
 ├── k8s/                # Kubernetes manifests (postgres/backend/frontend + ingress)
 ├── data-generator/    # simulated device log generator (Python)
-├── db/                # PostgreSQL schema
+├── db/                # PostgreSQL schema (incl. pgvector document_chunks table)
+├── rag/docs/           # synthetic device IFUs + guidance, source content for RAG
 ├── etl/                # cleaning + feature engineering (Python, pandas + SQLAlchemy)
 ├── ml/                # trained classifier + heuristic fallback for risk scoring
 │   └── train/          # synthetic training cohort + train/eval script
 ├── backend/           # Node/Express API + Claude tool-use chat endpoint (pg pool)
+│   ├── scripts/ingest_docs.js  # RAG ingestion (chunk + embed + load)
+│   └── src/rag/embeddings.js    # shared embedding fn (ingest + query time)
 ├── frontend/          # React + Vite dashboard and chat UI (nginx + proxy in Docker)
 ├── docs/              # architecture notes
 └── .github/workflows/ci.yml
@@ -230,6 +271,12 @@ respiratory-adherence-copilot/
 - The chat endpoint restricts the LLM to read-only, single-statement `SELECT`
   queries against a fixed set of tables (see `backend/src/tools/sqlTool.js`) —
   it cannot write to the database.
+- The chat endpoint has two tools: `query_adherence_db` (structured patient
+  data) and `search_device_docs` (RAG over device IFUs/clinical guidance,
+  see step 6 above). Claude can call either or both per turn, and the
+  backend now dispatches all tool calls in a turn, not just the first one.
+- `rag/docs/*.md` are original, synthetic documents written for this demo —
+  clearly marked as such in each file — not real Trudell documentation.
 - `etl/etl.py` is idempotent: it applies `db/schema.sql`, truncates existing
   rows (`ON DELETE CASCADE` from `patients`), and reloads from the CSVs, so
   re-running it is safe.

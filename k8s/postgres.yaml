@@ -21,6 +21,8 @@ data:
   01-schema.sql: |
     -- Schema for the Respiratory Device Adherence Copilot MVP (PostgreSQL).
 
+    CREATE EXTENSION IF NOT EXISTS vector;
+
     CREATE TABLE IF NOT EXISTS patients (
         patient_id                  TEXT PRIMARY KEY,
         device_type                 TEXT NOT NULL,
@@ -56,6 +58,15 @@ data:
     );
 
     CREATE INDEX IF NOT EXISTS idx_dose_events_patient_id ON dose_events(patient_id);
+
+    CREATE TABLE IF NOT EXISTS document_chunks (
+        id            SERIAL PRIMARY KEY,
+        source        TEXT NOT NULL,
+        chunk_index   INTEGER NOT NULL,
+        content       TEXT NOT NULL,
+        embedding     VECTOR(384) NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
 ---
 # --- credentials. Placeholder values below are fine for a local demo
 # cluster (kind/minikube). For anything shared/long-lived, don't apply
@@ -110,7 +121,10 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          # pgvector-enabled image - needed for the RAG document_chunks
+          # table. Same entrypoint behavior as plain postgres, just with
+          # the vector extension preinstalled (Debian-based, not alpine).
+          image: pgvector/pgvector:pg16
           ports:
             - containerPort: 5432
           envFrom:
