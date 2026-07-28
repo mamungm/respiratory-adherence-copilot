@@ -6,6 +6,13 @@ risk, and lets a clinician ask natural-language questions over the data via
 an LLM chat layer. Built as a portfolio project targeting Trudell Medical's
 AI Engineer role — see `docs/architecture.md` for the full design.
 
+## Demo
+
+<video src="resources/demo.mp4" controls width="100%"></video>
+
+Video not playing inline (some renderers, including GitHub's README view,
+don't embed `<video>`)? [Watch/download it directly](resources/demo.mp4).
+
 ## Stack
 
 - **Data generation & ETL**: Python, pandas, SQLAlchemy, psycopg2
